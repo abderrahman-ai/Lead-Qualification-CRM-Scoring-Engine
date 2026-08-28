@@ -17,11 +17,12 @@
 
 ## 📌 System Architecture & Process Flow
 
-This multi-workflow solution is split into two complementary pipelines: **Workflow 1** handles inbound CRM contact triggers, delays, and initiates the Telegram conversational onboarding, while **Workflow 2** processes ongoing conversational replies, executes dynamic scoring, updates HubSpot, and routes alerts to Slack.
+This multi-workflow solution is split into two sequential pipelines rendered entirely top-to-bottom (vertical orientation):
 
 ```mermaid
 graph TD
     subgraph Workflow 1 - Intake & Kickoff
+        direction TB
         A[New HubSpot Contact Trigger] --> B[Get Contact Details]
         B --> C[Extract Contact Info]
         C --> D{Has Telegram Chat ID?}
@@ -31,6 +32,7 @@ graph TD
     end
 
     subgraph Workflow 2 - Conversational Survey & Scoring
+        direction TB
         H[Incoming Telegram Message] --> I[Parse Telegram Message]
         I --> J[Get Lead State]
         J --> K{Lead Found & Qualifying?}
