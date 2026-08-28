@@ -1,0 +1,650 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "updates": [
+          "message"
+        ],
+        "additionalFields": {}
+      },
+      "id": "8864db83-65db-46bd-beac-8d080bdd2e8d",
+      "name": "Incoming Telegram Message",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.5,
+      "position": [
+        -448,
+        576
+      ],
+      "webhookId": "9fec8c55-d880-4996-a85d-d1e1a9e6f43e",
+      "credentials": {
+       
+
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst msg = $input.first().json.message || {};\nconst chatId = String((msg.chat && msg.chat.id) || '');\nconst text = (msg.text || '').trim();\n\nreturn [{ json: {\n  telegram_chat_id: chatId,\n  reply_text: text,\n} }];\n"
+      },
+      "id": "9a5d809e-2530-4ba0-ba0b-cba0b60799df",
+      "name": "Parse Telegram Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -224,
+        576
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "692VeYojSYp4nF4z",
+          "cachedResultName": "lead_qualification_state"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "phone",
+              "keyValue": "={{ $json.telegram_chat_id }}"
+            },
+            {
+              "keyName": "status",
+              "keyValue": "qualifying"
+            }
+          ]
+        },
+        "limit": 1
+      },
+      "id": "f18cb84b-d07b-4f9c-82b7-0d77666fc542",
+      "name": "Get Lead State",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        448,
+        576
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "contact-id-exists",
+              "leftValue": "={{ $json.contact_id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "4f1c568a-d233-40ed-84e4-1e88143fa42b",
+      "name": "Lead Found",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        672,
+        576
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst lead = $('Get Lead State').first().json;\nconst replyText = $('Parse Telegram Message').first().json.reply_text || '';\n\n// Rule-based parsing: extract meaningful value from free-text reply\nconst step = Number(lead.question_step) || 1;\nconst parsedValue = replyText.trim();\nconst needsClarification = false;\nconst clarifyingQuestion = '';\n\n// Accumulate raw answers\nconst existing = lead.raw_answers || '';\nconst rawAnswers = existing ? existing + ' | Q' + step + ': ' + replyText : 'Q' + step + ': ' + replyText;\n\n// Map answer to field\nlet intent = lead.intent || '';\nlet budget = lead.budget || '';\nlet financing = lead.financing || '';\nlet timeline = lead.timeline || '';\n\nif (!needsClarification) {\n  if (step === 1) intent = parsedValue;\n  else if (step === 2) budget = parsedValue;\n  else if (step === 3) financing = parsedValue;\n  else if (step === 4) timeline = parsedValue;\n}\n\nconst nextStep = needsClarification ? step : step + 1;\nconst isComplete = !needsClarification && step === 4;\n\n// ── Scoring ──────────────────────────────────────────────────────\nlet score = 0;\n\n// Budget match (0-30)\nconst budgetLower = budget.toLowerCase().replace(/,/g, '');\nconst budgetMatch = budgetLower.match(/(\\d+\\.?\\d*)[k]?/);\nlet budgetNum = 0;\nif (budgetMatch) {\n  budgetNum = parseFloat(budgetMatch[1]);\n  if (budgetLower.includes('k') && budgetNum < 10000) budgetNum = budgetNum * 1000;\n  if (budgetLower.includes('m') || budgetLower.includes('million')) budgetNum = budgetNum * 1000000;\n}\nif (budgetNum >= 500000) score += 30;\nelse if (budgetNum >= 200000) score += 20;\nelse if (budgetNum >= 100000) score += 10;\nelse if (budget && budget.length > 0) score += 5;\n\n// Timeline urgency (0-25)\nconst tlLower = timeline.toLowerCase();\nif (tlLower.match(/asap|immediate|now|this month|< ?1|less than.*month/)) score += 25;\nelse if (tlLower.match(/1|2|3 month|within.*month|quarter/)) score += 20;\nelse if (tlLower.match(/6 month|half.*year/)) score += 12;\nelse if (tlLower.match(/year|12 month/)) score += 6;\nelse if (timeline && timeline.length > 0) score += 3;\n\n// Financing readiness (0-25)\nconst finLower = financing.toLowerCase();\nif (finLower.match(/confirm|approved|mortgage.*broker|pre.?approv|ready/)) score += 25;\nelse if (finLower.match(/broker|working with|in process|discussing/)) score += 15;\nelse if (finLower.match(/cash|liquid|self.?fund/)) score += 25;\nelse if (financing && financing.length > 0) score += 5;\n\n// Engagement quality (0-20)\nconst totalWords = (intent + ' ' + budget + ' ' + financing + ' ' + timeline).split(' ').length;\nif (totalWords >= 20) score += 20;\nelse if (totalWords >= 10) score += 14;\nelse if (totalWords >= 4) score += 8;\nelse if (totalWords >= 1) score += 4;\n\n// Segment\nlet segment = '';\nif (isComplete) {\n  if (score >= 75) segment = 'Hot';\n  else if (score >= 40) segment = 'Warm';\n  else segment = 'Cold';\n}\n\nconst questions = [\n  '',\n  'Are you looking to buy, rent, or invest?',\n  \"What's your target budget range?\",\n  'Are you working with a mortgage broker or do you have financing confirmed?',\n  \"What's your target move-in or acquisition timeline?\",\n];\n\nconst nextQuestion = needsClarification\n  ? clarifyingQuestion\n  : (nextStep <= 4 ? questions[nextStep] : '');\n\nreturn [{ json: {\n  contact_id: lead.contact_id,\n  telegram_chat_id: lead.phone,\n  email: lead.email,\n  first_name: lead.first_name,\n  last_name: lead.last_name,\n  question_step: nextStep,\n  intent: intent,\n  budget: budget,\n  financing: financing,\n  timeline: timeline,\n  raw_answers: rawAnswers,\n  qualification_score: score,\n  segment: segment,\n  status: isComplete ? 'scored' : 'qualifying',\n  next_question: nextQuestion,\n  is_complete: isComplete,\n  needs_clarification: needsClarification,\n  last_updated: new Date().toISOString(),\n} }];\n"
+      },
+      "id": "f89fcd00-f6df-450d-9dbb-89311a1b4dfb",
+      "name": "Process Answer & Advance",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        448,
+        768
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "692VeYojSYp4nF4z",
+          "cachedResultName": "lead_qualification_state"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "contact_id",
+              "keyValue": "={{ $json.contact_id }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "question_step": "={{ $json.question_step }}",
+            "intent": "={{ $json.intent }}",
+            "budget": "={{ $json.budget }}",
+            "financing": "={{ $json.financing }}",
+            "timeline": "={{ $json.timeline }}",
+            "raw_answers": "={{ $json.raw_answers }}",
+            "qualification_score": "={{ $json.qualification_score }}",
+            "segment": "={{ $json.segment }}",
+            "status": "={{ $json.status }}",
+            "last_updated": "={{ $json.last_updated }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "24c193a6-9b70-49a5-b710-af64fcce48cf",
+      "name": "Update Lead State",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        672,
+        768
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "complete-check",
+              "leftValue": "={{ $(\"Process Answer & Advance\").item.json.is_complete }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "285480e6-4148-4518-92fb-b49e96b37079",
+      "name": "Qualification Complete",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        896,
+        480
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "email": "={{ $(\"Process Answer & Advance\").item.json.email }}",
+        "additionalFields": {
+          "customPropertiesUi": {
+            "customPropertiesValues": [
+              {
+                "property": "qualification_score",
+                "value": "={{ $(\"Process Answer & Advance\").item.json.qualification_score }}"
+              },
+              {
+                "property": "lead_segment",
+                "value": "={{ $(\"Process Answer & Advance\").item.json.segment }}"
+              },
+              {
+                "property": "lead_intent",
+                "value": "={{ $(\"Process Answer & Advance\").item.json.intent }}"
+              },
+              {
+                "property": "lead_budget",
+                "value": "={{ $(\"Process Answer & Advance\").item.json.budget }}"
+              },
+              {
+                "property": "lead_timeline",
+                "value": "={{ $(\"Process Answer & Advance\").item.json.timeline }}"
+              }
+            ]
+          }
+        },
+        "options": {}
+      },
+      "id": "b6e8ed8d-1938-4a60-b0dd-7c8d05f2920a",
+      "name": "Update HubSpot Contact",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2.2,
+      "position": [
+        1120,
+        384
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ \"Compose a Slack handoff message for a sales agent. The lead data is:\\nName: \" + $(\"Process Answer & Advance\").item.json.first_name + \" \" + $(\"Process Answer & Advance\").item.json.last_name + \"\\nEmail: \" + $(\"Process Answer & Advance\").item.json.email + \"\\nIntent: \" + $(\"Process Answer & Advance\").item.json.intent + \"\\nBudget: \" + $(\"Process Answer & Advance\").item.json.budget + \"\\nFinancing: \" + $(\"Process Answer & Advance\").item.json.financing + \"\\nTimeline: \" + $(\"Process Answer & Advance\").item.json.timeline + \"\\nScore: \" + $(\"Process Answer & Advance\").item.json.qualification_score + \"/100\\nSegment: \" + $(\"Process Answer & Advance\").item.json.segment + \"\\n\\nWrite a concise Slack message (no markdown headers) with: greeting, key lead facts, the score, and one suggested conversational opening line tailored to their situation. Keep it under 200 words.\" }}",
+        "options": {
+          "systemMessage": "You are a real estate sales enablement assistant. Write clear, motivating agent handoff briefings."
+        }
+      },
+      "id": "c57a667e-b66f-4fa1-8344-dca6b7645af1",
+      "name": "Generate Handoff Brief",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        1344,
+        384
+      ]
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "id",
+          "value": "gpt-5-mini"
+        },
+        "builtInTools": {},
+        "options": {}
+      },
+      "id": "b4b5ecc7-2463-473e-b51c-ffca35b89744",
+      "name": "GPT for Handoff Brief",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.3,
+      "position": [
+        1424,
+        608
+      ],
+      "credentials": {
+       
+      }
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {},
+            {},
+            {}
+          ]
+        },
+        "options": {}
+      },
+      "id": "a7ce30ba-86a3-4cfa-bcfc-86d31a5689df",
+      "name": "Route by Segment",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        1696,
+        368
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "<__PLACEHOLDER_VALUE__Slack #leads channel name (e.g. leads)__>"
+        },
+        "text": "={{ \"🔥 HOT LEAD — Score: \" + $(\"Process Answer & Advance\").item.json.qualification_score + \"/100\\n\\n\" + $json.output }}",
+        "otherOptions": {
+          "includeLinkToWorkflow": false
+        }
+      },
+      "id": "813844ef-201e-4b72-9d2b-e83b6e618afc",
+      "name": "Slack Hot Lead Alert",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.7,
+      "position": [
+        1920,
+        0
+      ],
+      "webhookId": "aa81488f-498a-4a0a-bee0-28bb6e369cce"
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $(\"Process Answer & Advance\").item.json.telegram_chat_id }}",
+        "text": "={{ \"Thank you \" + $(\"Process Answer & Advance\").item.json.first_name + \"! You're all set — one of our senior agents will reach out to you shortly to discuss the best properties matching your needs.\" }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "579f7a5f-74d3-427f-b399-99aa9efa0e62",
+      "name": "Telegram Hot Confirm",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1920,
+        192
+      ],
+      "webhookId": "6c3dd663-3a22-4c78-a0f6-5cd7b6dd2c15",
+      "credentials": {
+      
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "<__PLACEHOLDER_VALUE__Slack #leads channel name (e.g. leads)__>"
+        },
+        "text": "={{ \"🌡️ WARM LEAD (Weekly Review) — Score: \" + $(\"Process Answer & Advance\").item.json.qualification_score + \"/100\\nName: \" + $(\"Process Answer & Advance\").item.json.first_name + \" \" + $(\"Process Answer & Advance\").item.json.last_name + \"\\nIntent: \" + $(\"Process Answer & Advance\").item.json.intent + \" | Budget: \" + $(\"Process Answer & Advance\").item.json.budget + \" | Timeline: \" + $(\"Process Answer & Advance\").item.json.timeline + \"\\n→ Added to weekly review queue.\" }}",
+        "otherOptions": {
+          "includeLinkToWorkflow": false
+        }
+      },
+      "id": "cc850a6d-909a-4059-835d-4acf65406adb",
+      "name": "Slack Warm Lead Queue",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.7,
+      "position": [
+        1920,
+        384
+      ],
+      "webhookId": "92060b59-6c67-4e7c-b3f7-3ddfbb051a3c"
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $(\"Process Answer & Advance\").item.json.telegram_chat_id }}",
+        "text": "={{ \"Thanks \" + $(\"Process Answer & Advance\").item.json.first_name + \"! We'll have a property advisor follow up with tailored listings for you within the week.\" }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "7abb748f-4aa2-44a7-9766-c6b73057bcf8",
+      "name": "Telegram Warm Ack",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1920,
+        576
+      ],
+      "webhookId": "84f66e4e-68d6-4982-bbf9-3eadda9b268a",
+      "credentials": {
+       
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $(\"Process Answer & Advance\").item.json.telegram_chat_id }}",
+        "text": "={{ \"Thanks \" + $(\"Process Answer & Advance\").item.json.first_name + \"! We'll keep you updated with relevant market insights and listings. Reach out any time when you're ready to take the next step.\" }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "95d11b49-db48-426a-9f5d-cba7a0a8ce27",
+      "name": "Telegram Cold Nurture",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1920,
+        768
+      ],
+      "webhookId": "75316e3e-fb4c-4fbe-a622-60eab9283dcd",
+      "credentials": {
+        
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $(\"Process Answer & Advance\").item.json.telegram_chat_id }}",
+        "text": "={{ $(\"Process Answer & Advance\").item.json.next_question }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "5f909255-01a2-4f3c-a55e-e1d0aae2f0e8",
+      "name": "Send Next Question",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1120,
+        576
+      ],
+      "webhookId": "969e6ddc-1761-4ced-aebe-c910fd4f8586",
+      "credentials": {
+       
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "692VeYojSYp4nF4z",
+          "cachedResultName": "lead_qualification_state"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "phone",
+              "keyValue": "={{ $(\"Parse Telegram Message\").item.json.telegram_chat_id }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "status": "nurture",
+            "segment": "Nurture",
+            "last_updated": "={{ $now.toISO() }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "8ccbe86b-a091-466e-a932-765201dad183",
+      "name": "Mark Non-Responsive",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        896,
+        672
+      ]
+    }
+  ],
+  "connections": {
+    "Incoming Telegram Message": {
+      "main": [
+        [
+          {
+            "node": "Parse Telegram Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Telegram Message": {
+      "main": [
+        [
+          {
+            "node": "Get Lead State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Lead State": {
+      "main": [
+        [
+          {
+            "node": "Lead Found",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lead Found": {
+      "main": [
+        [
+          {
+            "node": "Process Answer & Advance",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mark Non-Responsive",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Answer & Advance": {
+      "main": [
+        [
+          {
+            "node": "Update Lead State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Lead State": {
+      "main": [
+        [
+          {
+            "node": "Qualification Complete",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Qualification Complete": {
+      "main": [
+        [
+          {
+            "node": "Update HubSpot Contact",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send Next Question",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update HubSpot Contact": {
+      "main": [
+        [
+          {
+            "node": "Generate Handoff Brief",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Handoff Brief": {
+      "main": [
+        [
+          {
+            "node": "Route by Segment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GPT for Handoff Brief": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Generate Handoff Brief",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by Segment": {
+      "main": [
+        [
+          {
+            "node": "Slack Hot Lead Alert",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Telegram Hot Confirm",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Slack Warm Lead Queue",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Telegram Warm Ack",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Telegram Cold Nurture",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "nodeGroups": [
+    {
+      "id": "b74647b9-185d-440a-b89b-4a4f9842d4fd",
+      "name": "Parse & Lookup",
+      "nodeIds": [
+        "9a5d809e-2530-4ba0-ba0b-cba0b60799df",
+        "f18cb84b-d07b-4f9c-82b7-0d77666fc542",
+        "4f1c568a-d233-40ed-84e4-1e88143fa42b"
+      ],
+      "description": "Parse Telegram message, look up the active lead in the data table, gate on whether a qualifying record is found"
+    },
+    {
+      "id": "76f6547d-22bc-4d9d-93e7-8a144ca3819a",
+      "name": "AI Scoring Engine",
+      "nodeIds": [
+        "f89fcd00-f6df-450d-9dbb-89311a1b4dfb",
+        "24c193a6-9b70-49a5-b710-af64fcce48cf",
+        "285480e6-4148-4518-92fb-b49e96b37079"
+      ],
+      "description": "Calculate weighted score, update data table state, check if all 4 questions are complete"
+    }
+  ],
+  "meta": {
+    "instanceId": "68ab79ef284ba4770782f4283623048bf56f9b1b8adedadda44544909075e437"
+  }
+}
